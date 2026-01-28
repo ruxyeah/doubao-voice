@@ -76,6 +76,36 @@ public class VoiceSessionEvent {
     private String closeReason;
 
     /**
+     * 重连次数
+     */
+    private Integer reconnectAttempt;
+
+    /**
+     * 最大重连次数
+     */
+    private Integer maxReconnectAttempts;
+
+    /**
+     * 重连延迟（毫秒）
+     */
+    private Long reconnectDelay;
+
+    /**
+     * 等待响应的请求数
+     */
+    private Integer pendingRequests;
+
+    /**
+     * 最后发送时间（毫秒前）
+     */
+    private Long lastSendAgo;
+
+    /**
+     * 最后接收时间（毫秒前）
+     */
+    private Long lastReceiveAgo;
+
+    /**
      * 事件类型枚举
      */
     public enum EventType {
@@ -105,7 +135,15 @@ public class VoiceSessionEvent {
         CHAT_ENDED,
 
         // 错误
-        DIALOG_ERROR
+        DIALOG_ERROR,
+
+        // 重连相关
+        RECONNECTING,
+        RECONNECTED,
+        RECONNECT_FAILED,
+
+        // 连接健康相关
+        CONNECTION_TIMEOUT
     }
 
     // ==================== 工厂方法 ====================
@@ -245,6 +283,49 @@ public class VoiceSessionEvent {
                 .sessionId(sessionId)
                 .statusCode(statusCode)
                 .error(message)
+                .build();
+    }
+
+    // ==================== 重连相关工厂方法 ====================
+
+    public static VoiceSessionEvent reconnecting(String sessionId, int attempt, int maxAttempts, long delayMs) {
+        return VoiceSessionEvent.builder()
+                .type(EventType.RECONNECTING)
+                .sessionId(sessionId)
+                .reconnectAttempt(attempt)
+                .maxReconnectAttempts(maxAttempts)
+                .reconnectDelay(delayMs)
+                .build();
+    }
+
+    public static VoiceSessionEvent reconnected(String sessionId, int attempts) {
+        return VoiceSessionEvent.builder()
+                .type(EventType.RECONNECTED)
+                .sessionId(sessionId)
+                .reconnectAttempt(attempts)
+                .build();
+    }
+
+    public static VoiceSessionEvent reconnectFailed(String sessionId, int attempts) {
+        return VoiceSessionEvent.builder()
+                .type(EventType.RECONNECT_FAILED)
+                .sessionId(sessionId)
+                .reconnectAttempt(attempts)
+                .error("重连失败：已达到最大重连次数")
+                .build();
+    }
+
+    // ==================== 连接健康相关工厂方法 ====================
+
+    public static VoiceSessionEvent connectionTimeout(String sessionId, int pendingRequests,
+                                                       long lastSendAgo, long lastReceiveAgo) {
+        return VoiceSessionEvent.builder()
+                .type(EventType.CONNECTION_TIMEOUT)
+                .sessionId(sessionId)
+                .pendingRequests(pendingRequests)
+                .lastSendAgo(lastSendAgo)
+                .lastReceiveAgo(lastReceiveAgo)
+                .error("请求响应超时，连接可能已断开")
                 .build();
     }
 }

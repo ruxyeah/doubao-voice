@@ -174,6 +174,10 @@ public class VoiceController {
                 .createdAt(session.getCreatedAt())
                 .lastActiveAt(session.getLastActiveAt())
                 .errorMessage(session.getErrorMessage())
+                // 诊断信息
+                .doubaoConnected(session.isDoubaoConnected())
+                .doubaoConnectionStarted(session.isDoubaoConnectionStarted())
+                .doubaoSessionId(session.getDoubaoSessionId())
                 .build();
     }
 }

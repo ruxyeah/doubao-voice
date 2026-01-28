@@ -47,4 +47,21 @@ public class SessionResponse {
      * 错误信息（如有）
      */
     private String errorMessage;
+
+    // ========== 诊断信息 ==========
+
+    /**
+     * 豆包客户端是否已连接
+     */
+    private Boolean doubaoConnected;
+
+    /**
+     * 豆包客户端连接是否已启动
+     */
+    private Boolean doubaoConnectionStarted;
+
+    /**
+     * 豆包协议sessionId
+     */
+    private String doubaoSessionId;
 }

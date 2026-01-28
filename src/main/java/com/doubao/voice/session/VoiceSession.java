@@ -1,7 +1,7 @@
 package com.doubao.voice.session;
 
-import com.doubao.voice.client.DoubaoClientListener;
 import com.doubao.voice.client.DoubaoWebSocketClient;
+import com.doubao.voice.client.ReconnectListener;
 import com.doubao.voice.config.DoubaoProperties;
 import com.doubao.voice.protocol.message.DoubaoMessage;
 import lombok.Getter;
@@ -25,10 +25,11 @@ import java.util.function.Consumer;
  * - 豆包API WebSocket客户端
  * - 会话状态管理
  * - 事件转发
+ * - 断线自动重连
  */
 @Slf4j
 @Getter
-public class VoiceSession implements DoubaoClientListener {
+public class VoiceSession implements ReconnectListener {
 
     /**
      * 会话ID（本地生成）
@@ -96,6 +97,13 @@ public class VoiceSession implements DoubaoClientListener {
         // 创建豆包客户端
         this.doubaoClient = new DoubaoWebSocketClient(properties);
         this.doubaoClient.addListener(this);
+
+        // 应用重连配置
+        DoubaoProperties.Api apiConfig = properties.getApi();
+        this.doubaoClient.setAutoReconnect(apiConfig.isAutoReconnect());
+        this.doubaoClient.setMaxReconnectAttempts(apiConfig.getMaxReconnectAttempts());
+        this.doubaoClient.setInitialReconnectDelay(apiConfig.getInitialReconnectDelay());
+        this.doubaoClient.setMaxReconnectDelay(apiConfig.getMaxReconnectDelay());
     }
 
     /**
@@ -183,6 +191,12 @@ public class VoiceSession implements DoubaoClientListener {
             log.warn("会话状态不允许发送音频: {}", state);
             return;
         }
+        if (!doubaoClient.isConnected()) {
+            state = SessionState.DISCONNECTED;
+            log.error("会话[{}] 豆包客户端已断开，无法发送音频", sessionId);
+            publishEvent(VoiceSessionEvent.error(sessionId, "豆包客户端已断开连接"));
+            return;
+        }
         doubaoClient.sendAudio(audioData);
         updateLastActive();
     }
@@ -191,9 +205,20 @@ public class VoiceSession implements DoubaoClientListener {
      * 发送文本查询
      */
     public void sendTextQuery(String text, String questionId) throws IOException {
+        log.info("会话[{}] 准备发送文本查询: text={}, state={}, doubaoClient.connected={}, doubaoClient.connectionStarted={}",
+                sessionId, text, state, doubaoClient.isConnected(), doubaoClient.isConnectionStarted());
+
         if (state != SessionState.SESSION_ACTIVE) {
             throw new IllegalStateException("会话状态不允许发送文本: " + state);
         }
+        if (!doubaoClient.isConnected()) {
+            state = SessionState.DISCONNECTED;
+            throw new IOException("豆包客户端已断开连接");
+        }
+        if (!doubaoClient.isConnectionStarted()) {
+            throw new IOException("豆包客户端连接未启动");
+        }
+
         doubaoClient.sendTextQuery(text, questionId);
         updateLastActive();
     }
@@ -203,6 +228,27 @@ public class VoiceSession implements DoubaoClientListener {
      */
     private void updateLastActive() {
         this.lastActiveAt = Instant.now();
+    }
+
+    /**
+     * 获取豆包客户端连接状态
+     */
+    public boolean isDoubaoConnected() {
+        return doubaoClient.isConnected();
+    }
+
+    /**
+     * 获取豆包客户端连接启动状态
+     */
+    public boolean isDoubaoConnectionStarted() {
+        return doubaoClient.isConnectionStarted();
+    }
+
+    /**
+     * 获取豆包协议sessionId
+     */
+    public String getDoubaoSessionId() {
+        return doubaoClient.getSessionId();
     }
 
     /**
@@ -267,9 +313,25 @@ public class VoiceSession implements DoubaoClientListener {
 
     @Override
     public void onConnectionStarted() {
+        SessionState previousState = state;
         state = SessionState.CONNECTED;
-        log.info("会话[{}] 连接已启动", sessionId);
+        log.info("会话[{}] 连接已启动, 之前状态: {}", sessionId, previousState);
         publishEvent(VoiceSessionEvent.connectionStarted(sessionId));
+
+        // 如果是重连后的连接启动，且之前有会话配置，自动重新启动会话
+        if (config != null && (previousState == SessionState.CONNECTING || previousState == SessionState.DISCONNECTED || previousState == SessionState.ERROR)) {
+            log.info("会话[{}] 检测到重连，自动重新启动会话", sessionId);
+            try {
+                // 稍微延迟以确保连接完全建立
+                Thread.sleep(100);
+                Map<String, Object> configMap = buildSessionConfig(config);
+                doubaoClient.sendStartSession(configMap);
+                state = SessionState.SESSION_STARTING;
+            } catch (Exception e) {
+                log.error("会话[{}] 自动重新启动会话失败: {}", sessionId, e.getMessage(), e);
+                publishEvent(VoiceSessionEvent.error(sessionId, "重连后自动启动会话失败: " + e.getMessage()));
+            }
+        }
     }
 
     @Override
@@ -363,5 +425,74 @@ public class VoiceSession implements DoubaoClientListener {
     @Override
     public void onDialogError(String statusCode, String message) {
         publishEvent(VoiceSessionEvent.dialogError(sessionId, statusCode, message));
+    }
+
+    // ==================== ReconnectListener 实现 ====================
+
+    @Override
+    public void onReconnecting(int attempt, int maxAttempts, long delayMs) {
+        log.info("会话[{}] 正在重连: 第{}/{}次，延迟{}ms", sessionId, attempt, maxAttempts, delayMs);
+        state = SessionState.CONNECTING;
+        publishEvent(VoiceSessionEvent.reconnecting(sessionId, attempt, maxAttempts, delayMs));
+    }
+
+    @Override
+    public void onReconnected(int attempts) {
+        log.info("会话[{}] 重连成功，共尝试{}次，准备重新启动会话", sessionId, attempts);
+        publishEvent(VoiceSessionEvent.reconnected(sessionId, attempts));
+
+        // 重连成功后，如果之前有会话配置，自动重新启动会话
+        if (config != null) {
+            try {
+                // 需要等待CONNECTION_STARTED事件后才能启动会话
+                // 这里只是设置状态，实际启动会话在onConnectionStarted中处理
+                log.info("会话[{}] 将在连接启动后自动重新启动会话", sessionId);
+            } catch (Exception e) {
+                log.error("会话[{}] 准备重新启动会话失败: {}", sessionId, e.getMessage());
+            }
+        }
+    }
+
+    @Override
+    public void onReconnectFailed(int attempts) {
+        log.error("会话[{}] 重连失败，已尝试{}次", sessionId, attempts);
+        state = SessionState.ERROR;
+        errorMessage = "重连失败：已达到最大重连次数";
+        publishEvent(VoiceSessionEvent.reconnectFailed(sessionId, attempts));
+    }
+
+    @Override
+    public void onConnectionTimeout(int pendingRequests, long lastSendAgo, long lastReceiveAgo) {
+        log.warn("会话[{}] 连接超时: pending={}, lastSend={}ms前, lastRecv={}ms前",
+                sessionId, pendingRequests, lastSendAgo, lastReceiveAgo);
+        publishEvent(VoiceSessionEvent.connectionTimeout(sessionId, pendingRequests, lastSendAgo, lastReceiveAgo));
+    }
+
+    /**
+     * 手动触发重连
+     */
+    public void reconnect() {
+        doubaoClient.reconnect();
+    }
+
+    /**
+     * 是否正在重连
+     */
+    public boolean isReconnecting() {
+        return doubaoClient.isReconnecting();
+    }
+
+    /**
+     * 获取当前重连次数
+     */
+    public int getReconnectAttempts() {
+        return doubaoClient.getReconnectAttempts();
+    }
+
+    /**
+     * 关闭会话，释放资源
+     */
+    public void shutdown() {
+        doubaoClient.shutdown();
     }
 }

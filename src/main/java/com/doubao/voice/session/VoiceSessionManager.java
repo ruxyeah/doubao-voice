@@ -81,9 +81,10 @@ public class VoiceSessionManager {
         VoiceSession session = sessions.remove(sessionId);
         if (session != null) {
             try {
-                session.disconnect();
+                // 使用shutdown方法释放所有资源
+                session.shutdown();
             } catch (Exception e) {
-                log.warn("断开会话连接失败: {}", e.getMessage());
+                log.warn("关闭会话失败: {}", e.getMessage());
             }
             log.info("移除会话: {}, 当前会话数: {}", sessionId, sessions.size());
         }

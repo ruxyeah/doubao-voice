@@ -195,6 +195,44 @@
             0%, 100% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.4); }
             50% { box-shadow: 0 0 0 20px rgba(231, 76, 60, 0); }
         }
+
+        /* 空闲倒计时样式 */
+        .idle-warning {
+            display: none;
+            background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%);
+            color: white;
+            padding: 16px 24px;
+            border-radius: 12px;
+            margin-top: 16px;
+            text-align: center;
+            animation: warning-pulse 1s infinite;
+        }
+        .idle-warning.show {
+            display: block;
+        }
+        @keyframes warning-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.8; }
+        }
+        .idle-warning .countdown {
+            font-size: 32px;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        .idle-warning .btn-continue {
+            background: white;
+            color: #f57c00;
+            border: none;
+            padding: 10px 30px;
+            border-radius: 20px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        .idle-warning .btn-continue:hover {
+            background: #fff3e0;
+        }
     </style>
 </head>
 <body>
@@ -239,10 +277,17 @@
                 <span id="statusText">未连接</span>
             </div>
             <div>
-                <button id="btnConnect" class="btn btn-primary" onclick="connect()">连接</button>
-                <button id="btnStartSession" class="btn btn-success" onclick="startSession()" disabled>开始会话</button>
-                <button id="btnEndSession" class="btn btn-danger" onclick="endSession()" disabled>结束会话</button>
-                <button id="btnDisconnect" class="btn btn-danger" onclick="disconnect()" disabled>断开连接</button>
+                <button id="btnStart" class="btn btn-primary" onclick="startConversation()">🚀 开始对话</button>
+                <button id="btnStop" class="btn btn-danger" onclick="stopConversation()" disabled>⏹️ 结束对话</button>
+                <button id="btnReconnect" class="btn btn-success" onclick="manualReconnect()" disabled style="margin-left: 20px;">🔄 重新连接</button>
+            </div>
+            <div id="connectionInfo" style="margin-top: 10px; font-size: 12px; color: #666;"></div>
+
+            <!-- 空闲倒计时警告 -->
+            <div id="idleWarning" class="idle-warning">
+                <div>⚠️ 会话即将因空闲而关闭</div>
+                <div class="countdown"><span id="countdownSeconds">30</span> 秒</div>
+                <button class="btn-continue" onclick="continueSession()">继续对话</button>
             </div>
         </div>
 
@@ -281,6 +326,16 @@
         let isRecording = false;
         let audioQueue = [];
         let isPlaying = false;
+        let pendingSessionConfig = null; // 等待启动的会话配置
+        let isSessionActive = false; // 会话是否已激活
+
+        // 空闲检测相关变量
+        let lastActivityTime = Date.now();
+        let idleCheckInterval = null;
+        let countdownInterval = null;
+        let countdownSeconds = 30;
+        const IDLE_WARNING_TIME = 30000;  // 30秒后显示警告
+        const COUNTDOWN_SECONDS = 30;      // 倒计时30秒
 
         // 日志函数
         function log(message, type = 'info') {
@@ -324,40 +379,46 @@
             }
         }
 
-        // 连接WebSocket
-        function connect() {
-            log('正在连接服务器...', 'info');
+        // 开始对话（合并连接+开始会话）
+        async function startConversation() {
+            try {
+                log('正在启动对话...', 'info');
+                document.getElementById('btnStart').disabled = true;
+                updateStatus('connected', '连接中...');
 
-            // 先通过REST API创建会话
-            fetch('/api/v1/voice/sessions', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({})
-            })
-            .then(res => res.json())
-            .then(data => {
+                // 保存会话配置，等连接启动后再发送
+                pendingSessionConfig = {
+                    speaker: document.getElementById('speaker').value,
+                    botName: document.getElementById('botName').value,
+                    systemRole: document.getElementById('systemRole').value,
+                    model: document.getElementById('model').value
+                };
+
+                // 1. 创建会话
+                const response = await fetch('/api/v1/voice/sessions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                const data = await response.json();
                 sessionId = data.sessionId;
                 log(`会话已创建: ${sessionId}`, 'success');
 
-                // 连接WebSocket
+                // 2. 连接WebSocket
                 const wsUrl = `ws://${window.location.host}/ws/voice?sessionId=${sessionId}`;
                 ws = new WebSocket(wsUrl);
                 ws.binaryType = 'arraybuffer';
 
                 ws.onopen = () => {
-                    log('WebSocket已连接', 'success');
-                    updateStatus('connected', '已连接');
-                    document.getElementById('btnConnect').disabled = true;
-                    document.getElementById('btnStartSession').disabled = false;
-                    document.getElementById('btnDisconnect').disabled = false;
+                    log('WebSocket已连接，等待连接启动...', 'success');
+                    updateStatus('connected', '已连接，等待启动...');
+                    // 不在这里发送启动会话，等待connection_started事件
                 };
 
                 ws.onmessage = (event) => {
                     if (event.data instanceof ArrayBuffer) {
-                        // 二进制音频数据
                         handleAudioData(event.data);
                     } else {
-                        // JSON消息
                         const msg = JSON.parse(event.data);
                         handleMessage(msg);
                     }
@@ -371,11 +432,73 @@
 
                 ws.onerror = (err) => {
                     log('WebSocket错误: ' + err, 'error');
+                    resetUI();
                 };
-            })
-            .catch(err => {
-                log('创建会话失败: ' + err, 'error');
-            });
+
+            } catch (err) {
+                log('启动对话失败: ' + err, 'error');
+                resetUI();
+            }
+        }
+
+        // 结束对话（合并结束会话+断开连接）
+        function stopConversation() {
+            log('正在结束对话...', 'info');
+            stopRecording();
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                // 先发送结束会话
+                ws.send(JSON.stringify({
+                    type: 'control',
+                    action: 'end'
+                }));
+
+                // 稍后断开连接
+                setTimeout(() => {
+                    if (ws) {
+                        ws.close();
+                        ws = null;
+                    }
+                }, 500);
+            }
+
+            resetUI();
+        }
+
+        // 手动重新连接
+        function manualReconnect() {
+            log('手动触发重新连接...', 'info');
+
+            // 保存当前配置用于重连后恢复
+            pendingSessionConfig = {
+                speaker: document.getElementById('speaker').value,
+                botName: document.getElementById('botName').value,
+                systemRole: document.getElementById('systemRole').value,
+                model: document.getElementById('model').value
+            };
+            isSessionActive = false;
+
+            // 关闭现有连接
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+
+            // 重新开始对话
+            setTimeout(() => {
+                startConversation();
+            }, 500);
+        }
+
+        // 更新连接信息显示
+        function updateConnectionInfo(info) {
+            const infoDiv = document.getElementById('connectionInfo');
+            if (info) {
+                infoDiv.textContent = info;
+                infoDiv.style.display = 'block';
+            } else {
+                infoDiv.style.display = 'none';
+            }
         }
 
         // 处理消息
@@ -383,23 +506,51 @@
             switch (msg.type) {
                 case 'status':
                     log(`状态: ${msg.status}`, 'success');
-                    if (msg.status === 'session_started') {
-                        updateStatus('session', '会话中');
-                        document.getElementById('btnStartSession').disabled = true;
-                        document.getElementById('btnEndSession').disabled = false;
+                    if (msg.status === 'connected') {
+                        // 初始连接成功，等待connection_started
+                    } else if (msg.status === 'connection_started') {
+                        // 连接已启动，现在可以启动会话了
+                        // 只有当会话未激活且有待处理的配置时才发送启动请求
+                        if (pendingSessionConfig && !isSessionActive) {
+                            log('连接已启动，正在启动会话...', 'info');
+                            updateStatus('connected', '正在启动会话...');
+                            ws.send(JSON.stringify({
+                                type: 'control',
+                                action: 'start',
+                                config: pendingSessionConfig
+                            }));
+                            pendingSessionConfig = null;
+                        }
+                    } else if (msg.status === 'session_started') {
+                        isSessionActive = true;
+                        updateStatus('session', '对话中');
+                        updateConnectionInfo('会话已启动，可以开始对话');
+                        document.getElementById('btnStart').disabled = true;
+                        document.getElementById('btnStop').disabled = false;
+                        document.getElementById('btnReconnect').disabled = false;
                         document.getElementById('btnMic').disabled = false;
                         document.getElementById('btnSendText').disabled = false;
+                        // 启动空闲检测
+                        startIdleCheck();
                     } else if (msg.status === 'session_finished') {
-                        updateStatus('connected', '已连接');
-                        document.getElementById('btnStartSession').disabled = false;
-                        document.getElementById('btnEndSession').disabled = true;
-                        document.getElementById('btnMic').disabled = true;
-                        document.getElementById('btnSendText').disabled = true;
-                        stopRecording();
+                        isSessionActive = false;
+                        updateStatus('disconnected', '已结束');
+                        resetUI();
+                    } else if (msg.status === 'reconnecting') {
+                        log(`正在重连 (${msg.attempt}/${msg.maxAttempts})，${msg.delayMs/1000}秒后重试...`, 'info');
+                        updateStatus('disconnected', `重连中 ${msg.attempt}/${msg.maxAttempts}`);
+                        updateConnectionInfo(`正在尝试第${msg.attempt}次重连，请稍候...`);
+                        isSessionActive = false; // 重连中会话失效
+                    } else if (msg.status === 'reconnected') {
+                        log(`重连成功，共尝试${msg.attempts}次，等待会话自动恢复...`, 'success');
+                        updateStatus('connected', '已重连，恢复会话中...');
+                        updateConnectionInfo('重连成功，正在自动恢复会话...');
+                        // 会话将由后端自动重启，等待session_started事件
                     }
                     break;
 
                 case 'asr':
+                    resetActivity(); // 重置空闲计时
                     if (msg.event === 'result') {
                         log(`ASR: ${msg.text} ${msg.isInterim ? '(临时)' : '(最终)'}`, 'asr');
                         if (!msg.isInterim) {
@@ -413,6 +564,7 @@
                     break;
 
                 case 'chat':
+                    resetActivity(); // 重置空闲计时
                     if (msg.event === 'response') {
                         log(`AI: ${msg.text}`, 'chat');
                         addChatMessage(msg.text, false);
@@ -420,6 +572,7 @@
                     break;
 
                 case 'tts':
+                    resetActivity(); // 重置空闲计时
                     if (msg.event === 'sentence_start') {
                         log(`TTS开始: ${msg.text}`, 'tts');
                     } else if (msg.event === 'ended') {
@@ -429,6 +582,14 @@
 
                 case 'error':
                     log(`错误: ${msg.error}`, 'error');
+                    break;
+
+                case 'warning':
+                    if (msg.warning === 'connection_timeout') {
+                        log(`⚠️ 连接超时: 等待${msg.pendingRequests}个响应，空闲${Math.round(msg.lastReceiveAgo/1000)}秒`, 'error');
+                        updateStatus('disconnected', '连接超时，正在重连...');
+                        updateConnectionInfo(`连接空闲超时，系统正在自动重连...`);
+                    }
                     break;
             }
         }
@@ -472,52 +633,19 @@
             }
         }
 
-        // 开始会话
-        function startSession() {
-            const config = {
-                speaker: document.getElementById('speaker').value,
-                botName: document.getElementById('botName').value,
-                systemRole: document.getElementById('systemRole').value,
-                model: document.getElementById('model').value
-            };
-
-            log('正在启动会话...', 'info');
-            ws.send(JSON.stringify({
-                type: 'control',
-                action: 'start',
-                config: config
-            }));
-        }
-
-        // 结束会话
-        function endSession() {
-            log('正在结束会话...', 'info');
-            ws.send(JSON.stringify({
-                type: 'control',
-                action: 'end'
-            }));
-            stopRecording();
-        }
-
-        // 断开连接
-        function disconnect() {
-            stopRecording();
-            if (ws) {
-                ws.close();
-                ws = null;
-            }
-            resetUI();
-        }
-
         // 重置UI
         function resetUI() {
-            document.getElementById('btnConnect').disabled = false;
-            document.getElementById('btnStartSession').disabled = true;
-            document.getElementById('btnEndSession').disabled = true;
-            document.getElementById('btnDisconnect').disabled = true;
+            document.getElementById('btnStart').disabled = false;
+            document.getElementById('btnStop').disabled = true;
+            document.getElementById('btnReconnect').disabled = true;
             document.getElementById('btnMic').disabled = true;
             document.getElementById('btnSendText').disabled = true;
             updateStatus('disconnected', '未连接');
+            updateConnectionInfo('');
+            pendingSessionConfig = null;
+            isSessionActive = false;
+            // 停止空闲检测
+            stopIdleCheck();
         }
 
         // 发送文本
@@ -525,6 +653,15 @@
             const input = document.getElementById('textInput');
             const text = input.value.trim();
             if (!text) return;
+
+            // 检查连接状态
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log('⚠️ 连接已断开，请重新开始对话', 'error');
+                return;
+            }
+
+            // 重置空闲计时
+            resetActivity();
 
             log(`发送文本: ${text}`, 'info');
             addChatMessage(text, true);
@@ -596,6 +733,7 @@
                 processor.connect(context.destination);
 
                 isRecording = true;
+                resetActivity(); // 重置空闲计时
                 document.getElementById('btnMic').textContent = '🔴 停止录音';
                 document.getElementById('btnMic').classList.add('recording');
                 document.getElementById('micStatus').textContent = '正在录音...';
@@ -659,6 +797,93 @@
             return btoa(binary);
         }
 
+        // ==================== 空闲检测和倒计时功能 ====================
+
+        // 开始空闲检测
+        function startIdleCheck() {
+            stopIdleCheck(); // 先停止之前的检测
+            lastActivityTime = Date.now();
+
+            idleCheckInterval = setInterval(() => {
+                if (!isSessionActive) {
+                    stopIdleCheck();
+                    return;
+                }
+
+                const idleTime = Date.now() - lastActivityTime;
+
+                // 如果空闲时间超过警告时间，显示倒计时
+                if (idleTime >= IDLE_WARNING_TIME && !countdownInterval) {
+                    startCountdown();
+                }
+            }, 1000);
+
+            log('空闲检测已启动', 'info');
+        }
+
+        // 停止空闲检测
+        function stopIdleCheck() {
+            if (idleCheckInterval) {
+                clearInterval(idleCheckInterval);
+                idleCheckInterval = null;
+            }
+            stopCountdown();
+        }
+
+        // 重置活动时间（用户有活动时调用）
+        function resetActivity() {
+            lastActivityTime = Date.now();
+            // 如果正在显示倒计时，隐藏它
+            if (countdownInterval) {
+                stopCountdown();
+                log('用户活动，倒计时已取消', 'info');
+            }
+        }
+
+        // 开始倒计时
+        function startCountdown() {
+            countdownSeconds = COUNTDOWN_SECONDS;
+            const warningDiv = document.getElementById('idleWarning');
+            const countdownSpan = document.getElementById('countdownSeconds');
+
+            warningDiv.classList.add('show');
+            countdownSpan.textContent = countdownSeconds;
+
+            log(`⚠️ 会话空闲，${COUNTDOWN_SECONDS}秒后将自动关闭`, 'error');
+
+            countdownInterval = setInterval(() => {
+                countdownSeconds--;
+                countdownSpan.textContent = countdownSeconds;
+
+                if (countdownSeconds <= 0) {
+                    // 倒计时结束，关闭会话
+                    stopCountdown();
+                    log('会话因空闲超时而关闭', 'error');
+                    stopConversation();
+                }
+            }, 1000);
+        }
+
+        // 停止倒计时
+        function stopCountdown() {
+            if (countdownInterval) {
+                clearInterval(countdownInterval);
+                countdownInterval = null;
+            }
+            const warningDiv = document.getElementById('idleWarning');
+            warningDiv.classList.remove('show');
+            countdownSeconds = COUNTDOWN_SECONDS;
+        }
+
+        // 用户点击继续对话
+        function continueSession() {
+            resetActivity();
+            log('用户选择继续对话', 'success');
+
+            // 发送一个心跳/ping消息保持会话活跃（可选）
+            // 这里只是重置本地计时器，服务端的recv_timeout也会因为有数据交互而重置
+        }
+
         // 页面初始化 - 检查安全上下文
         (function init() {
             // 检查是否为安全上下文
@@ -676,7 +901,7 @@
                 log('警告: 您的浏览器可能不支持麦克风访问，请使用最新版 Chrome、Firefox 或 Edge。', 'error');
             }
 
-            log('页面加载完成，点击"连接"按钮开始');
+            log('页面加载完成，点击"开始对话"按钮开始');
         })();
     </script>
 </body>

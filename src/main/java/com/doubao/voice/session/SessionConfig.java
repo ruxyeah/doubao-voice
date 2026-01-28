@@ -86,9 +86,11 @@ public class SessionConfig {
 
     /**
      * 接收超时时间（秒）
+     * 用户发送消息后，服务端等待下一条消息的最大时间
+     * 默认120秒，避免会话过早超时
      */
     @Builder.Default
-    private int recvTimeout = 10;
+    private int recvTimeout = 120;
 
     /**
      * 是否严格审核

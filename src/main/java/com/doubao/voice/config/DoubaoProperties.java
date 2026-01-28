@@ -83,6 +83,28 @@ public class DoubaoProperties {
          * 写入超时时间（毫秒）
          */
         private int writeTimeout = 10000;
+
+        // ========== 重连配置 ==========
+
+        /**
+         * 是否启用自动重连
+         */
+        private boolean autoReconnect = true;
+
+        /**
+         * 最大重连次数
+         */
+        private int maxReconnectAttempts = 5;
+
+        /**
+         * 初始重连延迟（毫秒）
+         */
+        private long initialReconnectDelay = 1000;
+
+        /**
+         * 最大重连延迟（毫秒）
+         */
+        private long maxReconnectDelay = 30000;
     }
 
     @Data

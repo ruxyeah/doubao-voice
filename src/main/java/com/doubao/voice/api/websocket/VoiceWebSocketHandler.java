@@ -322,6 +322,33 @@ public class VoiceWebSocketHandler extends AbstractWebSocketHandler {
                     message.put("statusCode", event.getStatusCode());
                     message.put("error", event.getError());
                 }
+                // 重连事件
+                case RECONNECTING -> {
+                    message.put("type", "status");
+                    message.put("status", "reconnecting");
+                    message.put("attempt", event.getReconnectAttempt());
+                    message.put("maxAttempts", event.getMaxReconnectAttempts());
+                    message.put("delayMs", event.getReconnectDelay());
+                }
+                case RECONNECTED -> {
+                    message.put("type", "status");
+                    message.put("status", "reconnected");
+                    message.put("attempts", event.getReconnectAttempt());
+                }
+                case RECONNECT_FAILED -> {
+                    message.put("type", "error");
+                    message.put("error", "重连失败");
+                    message.put("attempts", event.getReconnectAttempt());
+                }
+                // 连接健康相关
+                case CONNECTION_TIMEOUT -> {
+                    message.put("type", "warning");
+                    message.put("warning", "connection_timeout");
+                    message.put("pendingRequests", event.getPendingRequests());
+                    message.put("lastSendAgo", event.getLastSendAgo());
+                    message.put("lastReceiveAgo", event.getLastReceiveAgo());
+                    message.put("message", event.getError());
+                }
             }
 
             String json = objectMapper.writeValueAsString(message);
