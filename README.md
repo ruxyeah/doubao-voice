@@ -11,7 +11,8 @@
 - ✅ WebSocket流式接口
 - ✅ 支持语音对话和文本对话
 - ✅ 支持多种音色和模型版本
-
+![ScreenShot_2026-01-28_085752_128.png](docs%2FScreenShot_2026-01-28_085752_128.png)
+![ScreenShot_2026-01-28_085958_390.png](docs%2FScreenShot_2026-01-28_085958_390.png)
 ## 技术栈
 
 - JDK 17
